@@ -1,14 +1,17 @@
 import os
 from openai import OpenAI
 import base64
-import json
 import time
 import errno
 from elevenlabs import generate, play, set_api_key, voices
+from threading import Thread, Semaphore
+
 
 client = OpenAI()
 
 set_api_key(os.environ.get("ELEVENLABS_API_KEY"))
+# Semaphore to limit the number of concurrent threads
+thread_semaphore = Semaphore(2)
 
 def encode_image(image_path):
     while True:
@@ -24,17 +27,27 @@ def encode_image(image_path):
 
 
 def play_audio(text):
-    audio = generate(text,  model="eleven_multilingual_v2",voice=os.environ.get("ELEVENLABS_VOICE_ID"))
+    audio_stream = generate(text, model="eleven_multilingual_v2",voice=os.environ.get("ELEVENLABS_VOICE_ID"), stream=True, latency= 3)
+    chunks_to_collect = 50
+    collected_chunks = []
 
-    unique_id = base64.urlsafe_b64encode(os.urandom(30)).decode("utf-8").rstrip("=")
-    dir_path = os.path.join("narration", unique_id)
-    os.makedirs(dir_path, exist_ok=True)
-    file_path = os.path.join(dir_path, "audio.wav")
+    for i, chunk in enumerate(audio_stream):
+        collected_chunks.append(chunk)
 
-    with open(file_path, "wb") as f:
-        f.write(audio)
+        if (i + 1) % chunks_to_collect == 0:
+            # Concatenate the collected chunks
+            concatenated_chunks = b''.join(collected_chunks)
 
-    play(audio)
+            # Play the concatenated chunks
+            play(concatenated_chunks)
+
+            # Reset the collected chunks
+            collected_chunks = []
+
+    # Play any remaining chunks if the total number of chunks is not a multiple of 5
+    if collected_chunks:
+        concatenated_chunks = b''.join(collected_chunks)
+        play(concatenated_chunks)
 
 
 def generate_new_line(base64_image):
@@ -72,29 +85,40 @@ def analyze_image(base64_image, script):
     return response_text
 
 
+def getImgAnalyze(script):
+    # path to your image
+    image_path = os.path.join(os.getcwd(), "./frames/frame.jpg")
+
+    # getting the base64 encoding
+    base64_image = encode_image(image_path)
+
+    # analyze posture
+    print("👀 David is watching...")
+    analysis = analyze_image(base64_image, script=script)
+
+    print("🎙️ David says:")
+    print(analysis)
+    return analysis
+
 def main():
     script = []
+    analysis = getImgAnalyze(script)
 
     while True:
-        # path to your image
-        image_path = os.path.join(os.getcwd(), "./frames/frame.jpg")
 
-        # getting the base64 encoding
-        base64_image = encode_image(image_path)
+        thread = Thread(target=play_audio, args=(analysis,))
+        thread.start()
+        time.sleep(5)
 
-        # analyze posture
-        print("👀 David is watching...")
-        analysis = analyze_image(base64_image, script=script)
+        analysis = getImgAnalyze(script)
+        thread.join()
 
-        print("🎙️ David says:")
-        print(analysis)
-
-        play_audio(analysis)
+        # play_audio(analysis)
 
         script = script + [{"role": "assistant", "content": analysis}]
 
         # wait for 5 seconds
-        time.sleep(5)
+        time.sleep(0.1)
 
 
 if __name__ == "__main__":
